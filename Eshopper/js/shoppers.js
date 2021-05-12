@@ -1,14 +1,11 @@
 
-const { MongoClient } = require("mongodb");
+const path = require("path")
 var fs = require('fs');
 var formidable = require('formidable');
 const { body,validationResult } = require('express-validator');
+const utils = require("./utils")
 
-
-/**
- * constants
- */
-const uri = "mongodb://localhost:27017/eshopper";
+var skip = 0;
 
 exports.addProduct = function(req, res){
     (req, res, next) => {
@@ -29,6 +26,7 @@ exports.addProduct = function(req, res){
     //upload files
     var formData = new formidable.IncomingForm();
     formData.parse(req, async function (error, fields, files) {
+        var db = null;
         try{
             var htmlData = '';
             var fileArray = '';
@@ -60,47 +58,238 @@ exports.addProduct = function(req, res){
             if(_data){
                 var jsonData = "{\"_id\":\""+hexDatetime+"\","+_data+"}";
                 //console.log(jsonData);
-                var db = new DBUtils(uri);
-                await db.insertIntoProducts(jsonData);
-                var count = await db.countRecords(DBUtils.productTable,'{}');
+                db = new utils.DBUtils(utils.uri);
+                await db.storeData(utils.DBUtils.productTable, jsonData);
+                var count = await db.countRecords(utils.DBUtils.productTable,'{}');
                 htmlData += `<p>Total documents in products collection : ${count}.</p>`
             }
             res.send(htmlData);
         }catch(error){
             console.log("ERROR: "+error)
+        }finally{
+            if(db){
+                db.close();
+            }
         }
     });
 }
 
+exports.getCategories = async function(){
+    
+    var db = null;
+    try{
+        db = new utils.DBUtils(utils.uri);
+        var query = `[
+            { 
+                "$match": {
+                    "fields.category": { 
+                        "$exists": true, 
+                        "$ne": null,
+                        "$ne": "" 
+                    }
+                }    
+            },
+            { 
+                "$group": {
+                    "_id": "$fields.category", 
+                    "subcategories": { 
+                        "$push": {
+                            "$cond":[
+                                {"$ne": ["$fields.subcategory", ""]},
+                                "$fields.subcategory",
+                                null
+                            ]
+                        }
+                    },
+                    "count": { 
+                        "$sum": 1
+                    }
+                }   
+            },
+            {
+                "$sort": {
+                    "subcategories" : -1,
+                    "_id": 1
+                }
+            }  
+        ]`;
 
-
-class DBUtils {
-    static productTable = "products";
-    constructor(uri) {
-        try{
-            this.client = new MongoClient(uri, { useUnifiedTopology: true });
-            this.client.connect();
-            this.db = this.client.db();
-        }catch (error) {
-            console.error("error:", error);
+        var jsondata = await db.getAllDataAggregate(utils.DBUtils.productTable, query);
+        var grid ='';
+        for (i in jsondata){
+            var doc = jsondata[i];
+            grid += createCategoryGrid(doc);
+            //console.log("catagories: "+ doc);
+        }
+        return grid;
+    }catch(error){
+        console.log("getCategory: "+error)
+    }finally{
+        if(db){
+            db.close();
         }
     }
-
-    async insertIntoProducts(data){
-        try{
-            await this.db.collection(DBUtils.productTable).insertOne(JSON.parse(data));
-        } catch (error) {
-            console.error("error:", error);
-        }
-    }
-
-    async countRecords(tablename, data){
-        try{
-            var count = await this.db.collection(tablename).find({}).count();
-            return count;
-        } catch (error) {
-            console.error("error:", error);
-        }
-    }
-
 }
+
+exports.getBrands = async function(){
+    var db = null;
+    try{
+        db = new utils.DBUtils(utils.uri);
+        var query = `[
+            { 
+                "$match": {
+                    "fields.brand": { 
+                        "$exists": true, 
+                        "$ne": null,
+                        "$ne": "" 
+                    }
+                }    
+            },
+            { 
+                "$group": {
+                    "_id": "$fields.brand",
+                    "count": { 
+                        "$sum": 1 
+                    }
+                }   
+            },
+            {
+                "$sort": {
+                    "count" : -1
+                }
+            }        
+        ]`;
+
+        var jsondata = await db.getAllDataAggregate(utils.DBUtils.productTable, query);
+        var grid ='';
+        for (i in jsondata){
+            var doc = jsondata[i];
+            grid += `<li><a href="#"> <span class="pull-right">(${doc.count})</span>${doc._id}</a></li>`;
+            //console.log("Brands: "+ doc);
+        }
+        return grid;
+    }catch(error){
+        console.log("getCategory: "+error)
+    }finally{
+        if(db){
+            db.close();
+        }
+    }
+}
+
+module.exports.getProducts = async function(limit, pagination){
+    var db = null;
+    try{
+        pagination = pagination?pagination<2?0:pagination:0;
+        var skip = limit * pagination;
+        db = new utils.DBUtils(utils.uri);
+        var count = await db.countRecords(utils.DBUtils.productTable, {}, {"_id":1});
+        //console.log("("+count+" >= "+skip+") = "+(count >= skip));
+        if(count >= skip){
+            var jsondata = await db.getAllData(utils.DBUtils.productTable, {}, {limit: limit, skip: skip}, {"fields.name":1,"fields.price":1,"images":1});
+            //console.log(jsondata);
+            var grids = '';
+            for(var i in jsondata){
+                var doc = jsondata[i];
+                grids += createProductGrid(doc);
+            }
+            
+            return grids;
+        }
+        //$("div.features_items").append(grids);
+            
+    }catch(error){
+        console.log("Get Product Error:"+error);
+    }finally{
+        if(db){
+            db.close();
+        }
+    }
+    return '';
+}
+
+var createProductGrid = function(doc){
+    var image = 'products/default.jpg';
+    for(var j in doc.images){
+        var img = doc.images[j];
+        image = img.image;
+        filename = path.join(__dirname, "../"+image);
+        if (fs.existsSync(filename)) {
+            image = image.substr(image.indexOf("/")+1);
+        }else{
+            image = 'products/default.jpg';
+            continue;
+        }
+        if(img["main-image"]){
+            break;
+        }
+        //console.log("is main image: "+img["main-image"] +" URL: "+img.image);
+    }
+    var price = doc.fields.price?"£"+doc.fields.price:"Out of Stock";
+    var displayName = doc.fields.name?doc.fields.name:"It's yours!!";
+    
+    var grid=`<div class="col-sm-4">
+                    <div class="product-image-wrapper">
+                        <div class="single-products">
+                                <div class="productinfo text-center">
+                                    <img class="grid-image" src="${image}" alt="" />
+                                    <h2>${price}</h2>
+                                    <p>${displayName}</p>
+                                    <a href="#" class="btn btn-default add-to-cart"><i class="fa fa-shopping-cart"></i>Add to cart</a>
+                                </div>
+                                <div class="product-overlay">
+                                    <div class="overlay-content">
+                                        <h2>${price}</h2>
+                                        <p>${displayName}</p>
+                                        <a href="#" class="btn btn-default add-to-cart"><i class="fa fa-shopping-cart"></i>Add to cart</a>
+                                    </div>
+                                </div>
+                        </div>
+                        <div class="choose">
+                            <ul class="nav nav-pills nav-justified">
+                                <li><a disabled="disabled" data-toggle="tooltip" title="Comming Soon!!"><i class="fa fa-plus-square"></i>Add to wishlist</a></li>
+                                <li><a disabled="disabled" data-toggle="tooltip" title="Comming Soon!!"><i class="fa fa-plus-square"></i>Add to compare</a></li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                `;
+
+                return grid;
+}
+
+var createCategoryGrid = function(doc){
+   
+    var category = doc._id;
+
+    var subcategories = '';
+    for(i in doc.subcategories){
+        var subcategory = doc.subcategories[i];
+        subcategories += `${subcategory?`<li><a href="#">${subcategory}</a></li>
+        `:``}`;
+    }
+    
+    var grid=`<div class="panel panel-default">
+                <div class="panel-heading">
+                    <h4 class="panel-title">
+                        <a data-toggle="collapse" data-parent="#accordian" href="#${category}">
+                        ${subcategories?`<span class="badge pull-right"><i class="fa fa-plus"></i></span>`:``}
+                            ${category}
+                        </a>
+                    </h4>
+                </div>
+                ${subcategories?
+                `<div id="${category}" class="panel-collapse collapse">
+                    <div class="panel-body">
+                        <ul>
+                            ${subcategories}
+                        </ul>
+                    </div>
+                </div>`: ''}
+            </div>
+                `;
+
+                return grid;
+}
+
+

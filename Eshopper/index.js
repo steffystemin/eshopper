@@ -1,12 +1,25 @@
 const express = require("express");
+const session = require("express-session");
 const path = require("path");
+require('dotenv').config();
+
 var bodyParser = require('body-parser');
-var shopper = require('./js/shoppers')
+var shopper = require('./js/shoppers');
+var auth = require('./js/authentication');
+var utils = require('./js/utils');
 
 
+//var cookieParser = require('cookie-parser');
 
+
+/*
+const redis = require('redis');
+let RedisStore = require('connect-redis')(session);
+let redisClient = redis.createClient();
+*/
 const app = express();
-const port =20000;
+//const router = express.Router();
+//const port =20000;
 
 app.set("view engine", "ejs");
 app.use(express.static(path.join(__dirname,"images")));
@@ -15,9 +28,50 @@ app.use(express.static(path.join(__dirname,"js")));
 app.use(express.static(path.join(__dirname,"fonts")));
 app.use(express.static(__dirname + '/public'));
 
-app.use(bodyParser.urlencoded({
-   extended: false
+/*
+app.use(cookieParser());
+app.use(session({secret: "Shh, its a secret!"}));
+*/
+
+/*
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+*/
+
+/*
+app.use(
+    session({
+      secret: ['veryimportantsecret','notsoimportantsecret','highlyprobablysecret'], 
+       name: "secretname", 
+       cookie: {
+        httpOnly: true,
+        secure: true,
+        sameSite: true,
+        maxAge: 600000 // Time is in miliseconds
+    },
+      store: new RedisStore({ client: redisClient ,ttl: 86400}),   
+      resave: false
+    })
+  )
+*/
+
+/*
+app.use(session({secret: "eshopper",saveUninitialized: true,resave: true,
+    name: "secretname",
+    cookie: {
+        httpOnly: true,
+        secure: true,
+        sameSite: true,
+        maxAge: 600000 // Time is in miliseconds
+    }
 }));
+*/
+
+app.use(session({secret: "eshopper",saveUninitialized: true,resave: true}));
+app.use(bodyParser.json());       
+app.use(bodyParser.urlencoded({extended: true}));
+
+
 
 /*
 app.use(function(req, res, next) {
@@ -31,17 +85,105 @@ app.use(function(req, res, next) {
 */
 
 
-
-app.get("/", (req, res) =>{
-    res.render("index");
+app.get("/", async (req, res) =>{
+    
+    var grids = await shopper.getProducts(600);
+    var categories = await shopper.getCategories();
+    var brands = await shopper.getBrands();
+    var id = (req.session && req.session.customer_id)?req.session.customer_id:null;
+    //console.log("S.ID="+req.sessionID+" : index customer id: "+id);
+    res.render("index", {
+        grids: grids,
+        categories: categories,
+        brands: brands,
+        customer_id: id
+    });
 });
 
-app.get("/index", (req, res) =>{
-    res.render("index");
+app.get("/index", async (req, res) =>{
+    var grids = await shopper.getProducts(600);
+    var categories = await shopper.getCategories();
+    var brands = await shopper.getBrands();
+    var id = (req.session && req.session.customer_id)?req.session.customer_id:null;
+    //console.log("S.ID="+req.sessionID+" : index customer id: "+id);
+    res.render("index", {
+        grids: grids,
+        categories: categories,
+        brands: brands,
+        customer_id: id
+    });
 });
 
 app.get("/login", (req, res) => {
     res.render("login");
+});
+
+app.get("/logout", (req, res) => {
+    //console.log("session id:" + JSON.stringify(req.session));
+    req.session.destroy();
+    res.redirect("/");
+});
+
+app.post("/signup", async (req, res) => {
+    var signup = await auth.customerRegistration(req);
+    res.render("login");
+});
+
+app.get("/login_admin", (req, res) => {
+    res.render("login_admin");
+});
+
+app.post("/signup_admin", async (req) => {
+    var signup = await auth.adminRegistration(req);
+    res.render("login_admin");
+});
+
+app.post("/signin", async (req, res) => {
+    var doc = await auth.customerLogin(req);
+    if(!utils.isEmpty(doc)){
+        req.session.customer_id = doc._id;
+        res.redirect("/");
+    }else{
+        res.redirect("login");
+    }
+
+});
+
+app.post("/signin_admin", async (req, res) => {
+    var doc = await auth.customerLogin(req);
+    if(!utils.isEmpty(doc)){
+        req.session.admin_id = doc._id;
+        res.redirect("/admin");
+    }else{
+        res.redirect("/login_admin");
+    }
+});
+
+app.get("/myaccount", async (req, res) => {
+    var doc = await auth.myaccount(req, res);
+    //console.log(doc);
+    if(doc){
+        res.render("myaccount", {
+            name: doc["user-data"].name,
+            email: doc["user-data"].email,
+            password: doc["user-data"].password,
+            phone: doc["user-data"].phone,
+            customer_id: req.session.customer_id
+        });
+    }
+});
+
+app.get("/admin", async (req, res) => {
+    var doc = await auth.admin(req)
+    if(doc){
+        res.render("admin", {
+            name: doc["user-data"].name,
+            email: doc["user-data"].email,
+            password: doc["user-data"].password,
+            phone: doc["user-data"].phone,
+            admin_id: req.session.admin_id
+        });
+    }
 });
 
 app.get("/4-0-4", (req, res) => {
@@ -72,8 +214,8 @@ app.get("/product_details", (req, res) => {
     res.render("product_details");
 });
 
-app.get("/products", (req, res) => {
-    res.render("products");
+app.get("/shelf", (req, res) => {
+    res.render("shelf");
 });
 
 app.get("/header", (req, res) => {
@@ -94,6 +236,6 @@ app.post("/saveproduct", (req, res) => {
     
 });
 
-app.listen(port, () => {
-    console.log(`Example app listining at http://localhost:${port}`);
+app.listen(process.env.PORT, () => {
+    console.log(`Example app listining at http://localhost:${process.env.PORT}`);
 })

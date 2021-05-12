@@ -2547,3 +2547,12 @@ h2.title {
  font-size: 14px;
  line-height: 3;
 }
+
+.grid-image{
+  width:242px;
+  height:270px;
+}
+
+.btn.disabled, fieldset[disabled] .btn {
+  pointer-events: auto;
+}
